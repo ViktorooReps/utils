@@ -21,7 +21,7 @@ main(int argc, char *argv[])
     }
 
     char *filename = argv[1];
-    int file_desc = open(filename, O_WRONLY | O_CREAT | O_TRUNC);
+    int file_desc = open(filename, O_WRONLY | O_CREAT | O_TRUNC, 0666);
 
     if (file_desc == CREATE_ERROR) {
         fprintf(stderr, "FILE CREATION ERROR: unable to create a file %s\n", filename);
