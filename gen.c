@@ -62,6 +62,19 @@ main(int argc, char *argv[])
                     }
                     break;
                 }
+                case 'l': {
+                    printf("Input %d long long's\n", num);
+                    for (int i = 0; i < num; ++i) {
+                        long long lld;
+                        scanf("%lld", &lld);
+                        int result = write(file_desc, &lld, sizeof(lld));
+                        if (result == WRITE_ERROR) {
+                            fprintf(stderr, "FILE WRITING ERROR: unable to write to a file %s", filename);
+                            return 1;
+                        }
+                    }
+                    break;
+                }
                 
                 default:
                     break;
