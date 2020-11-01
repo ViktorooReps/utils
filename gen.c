@@ -9,11 +9,19 @@
 #include <ctype.h>
 #include <limits.h>
 
+enum AutoFill
+{
+    NO_AUTOFILL,
+    RANDOMFILL,
+    ENUMFILL,
+};
+
 enum Errors
 {
     CREATE_ERROR = -1,
     WRITE_ERROR = -1,
     GETLINE_EOF = -1,
+    SUCCESSFUL_READ = 0,
 };
 
 enum ParseResult
@@ -32,6 +40,9 @@ enum ParseResult
     WRITE_U64,
     WRITE_S64,
     WRITE_CH,
+    SET_NO_AUTOFILL,
+    SET_RANDOMFILL,
+    SET_ENUMFILL,
     WRONG_FORMAT,
     NO_PARAMS,
 };
@@ -56,6 +67,9 @@ parse_params(const char *line, int *amount)
     }
 
     int simple_res[] = {
+        SET_NO_AUTOFILL,
+        SET_RANDOMFILL,
+        SET_ENUMFILL,
         SET_BIG_ENDIAN,
         SET_LITTLE_ENDIAN,
         PRINT_HELP,
@@ -64,6 +78,9 @@ parse_params(const char *line, int *amount)
     };
 
     char *simple_flags[] = {
+        "-noautofill",
+        "-randomfill",
+        "-enumfill",
         "-big_endian",
         "-little_endian",
         "-help",
@@ -72,6 +89,9 @@ parse_params(const char *line, int *amount)
     };
 
     char *simple_flags_short[] = {
+        "-nf",
+        "-rf",
+        "-ef",
         "-be",
         "-le",
         "-h",
@@ -123,6 +143,113 @@ parse_params(const char *line, int *amount)
     return WRONG_FORMAT;
 }
 
+void 
+swap_bytes(uint8_t *num1, uint8_t *num2)
+{
+    uint8_t tmp = *num2;
+    *num2 = *num1;
+    *num1 = tmp;
+}
+
+int 
+read_numbers(int file_desc, 
+             int cnt, 
+             const char *format, 
+             int byte_cnt, 
+             int output_endian)
+{
+    uint8_t buf[byte_cnt];
+    for (int i = 0; i < cnt; ++i) {
+        scanf(format, &buf);
+
+        if (output_endian == BIG_ENDIAN) {
+            for (int i = 0; i < byte_cnt / 2; ++i) {
+                swap_bytes(&buf[i], &buf[byte_cnt - 1 - i]);
+            }
+        }
+
+        int result = write(file_desc, buf, sizeof(buf));
+
+        if (result == WRITE_ERROR) {
+            return WRITE_ERROR;
+        }
+    }
+    return SUCCESSFUL_READ;
+}
+
+int
+enum_fill(int file_desc, int cnt, int byte_cnt, int output_endian)
+{
+    union 
+    {
+        uint64_t num;
+        uint8_t buf[8];
+    } conv;
+    
+    conv.num = 0;
+    uint64_t maxnum = UINT64_MAX;
+    if (byte_cnt != 8) {
+        maxnum = 0x1;
+        maxnum <<= byte_cnt * CHAR_BIT;
+    }
+
+    conv.num = 0;
+    for (int i = 0; i < cnt; ++i) {
+
+        if (output_endian == BIG_ENDIAN) {
+            for (int i = 0; i < byte_cnt / 2; ++i) {
+                swap_bytes(&conv.buf[i], &conv.buf[byte_cnt - 1 - i]);
+            }
+        }
+
+        int result = write(file_desc, conv.buf, byte_cnt);
+
+        if (result == WRITE_ERROR) {
+            return WRITE_ERROR;
+        }
+
+        if (byte_cnt != 8) {
+            conv.num = (conv.num + 1) % maxnum;
+        } else {
+            conv.num = conv.num + 1;
+        }
+    }
+    return SUCCESSFUL_READ;
+}
+
+int
+rand_fill(int file_desc, int cnt, int byte_cnt, int output_endian)
+{
+    union 
+    {
+        uint64_t num;
+        uint8_t buf[8];
+    } conv;
+    
+    conv.num = 0;
+    uint64_t maxnum = UINT64_MAX;
+    if (byte_cnt != 8) {
+        maxnum = 0x1;
+        maxnum <<= byte_cnt * CHAR_BIT;
+    }
+
+    for (int i = 0; i < cnt; ++i) {
+        conv.num = rand() * rand() * rand();
+        if (output_endian == BIG_ENDIAN) {
+            for (int i = 0; i < byte_cnt / 2; ++i) {
+                swap_bytes(&conv.buf[i], &conv.buf[byte_cnt - 1 - i]);
+            }
+        }
+
+        int result = write(file_desc, conv.buf, byte_cnt);
+
+        if (result == WRITE_ERROR) {
+            return WRITE_ERROR;
+        }
+    }
+    return SUCCESSFUL_READ;
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -145,6 +272,7 @@ main(int argc, char *argv[])
 
     int amount = 0;
     int output_endian = LITTLE_ENDIAN;
+    int autofill = NO_AUTOFILL;
 
     enum ParseResult res;
     while ((res = parse_params(line, &amount)) != END_SESSION) {
@@ -166,9 +294,28 @@ main(int argc, char *argv[])
                 break;
             }
 
+            case SET_NO_AUTOFILL: {
+                autofill = NO_AUTOFILL;
+                printf("Autofill was changed to no autofill\n");
+                break;
+            }
+
+            case SET_ENUMFILL: {
+                autofill = ENUMFILL;
+                printf("Autofill was changed to no enumfill\n");
+                break;
+            }
+
+            case SET_RANDOMFILL: {
+                autofill = RANDOMFILL;
+                printf("Autofill was changed to no randomfill\n");
+                break;
+            }
+
             case PRINT_HELP: {
                 printf("OPTIONS:\n"
                         "changing output endian: -little_endian (-le) or -big_endian (-be)\n"
+                        "autofill options: -noautofill (-nf), -randomfill (-rf) or -enumfill (-ef)\n"
                         "print current filename, endian etc: -info (-i)\n"
                         "end session: -quit (-q)\n"
                         "write numbers to the file: -[s/u][8/16/32/64] [amount]\n"
@@ -179,11 +326,30 @@ main(int argc, char *argv[])
             }
 
             case PRINT_INFO: { //TODO
+                char *endian_str;
+                char *autofill_str;
+
+                if (output_endian == LITTLE_ENDIAN) {
+                    endian_str = "little_endian";
+                }
+                if (output_endian == BIG_ENDIAN) {
+                    endian_str = "big_endian";
+                }
+
+                if (autofill == NO_AUTOFILL) {
+                    autofill_str = "no autofill";
+                }
+                if (autofill == RANDOMFILL) {
+                    autofill_str = "randomfill";
+                }
+                if (autofill == ENUMFILL) {
+                    autofill_str = "enumfill";
+                }
+                                
                 printf("INFO:\n"
                         "full filename: %s\n"
-                        "output endian: %s\n", filename,
-                                             ((output_endian == LITTLE_ENDIAN)?
-                                                "little endian" : "big endian"));
+                        "output endian: %s\n"
+                        "autofill: %s\n", filename, endian_str, autofill_str);
                 break;
             }
 
@@ -194,229 +360,226 @@ main(int argc, char *argv[])
             }
 
             case WRITE_U8: {
-                printf("Input %d unsigned 8 bit numbers\n", amount);
-                uint8_t num;
-                for (int i = 0; i < amount; ++i) {
-                    scanf("%hhu", &num);
+                int byte_cnt = 1;
+                int res = SUCCESSFUL_READ;
 
-                    int result = write(file_desc, &num, sizeof(num));
-
-                    if (result == WRITE_ERROR) {
-                        fprintf(stderr, "FILE WRITING ERROR: unable to write to a file %s", filename);
-                        return 1;
-                    }
+                if (autofill == NO_AUTOFILL) {
+                    printf("Input %d unsigned 8 bit numbers\n", amount);
+                    res = read_numbers(file_desc, amount, "%hhu", byte_cnt, output_endian);
+                    getline(&line, &alloc_space, stdin);
                 }
-                getline(&line, &alloc_space, stdin);
+
+                if (autofill == ENUMFILL) {
+                    res = enum_fill(file_desc, amount, byte_cnt, output_endian);
+                }
+
+                if (autofill == RANDOMFILL) {
+                    res = rand_fill(file_desc, amount, byte_cnt, output_endian);
+                }
+
+                if (res == WRITE_ERROR) {
+                    fprintf(stderr, "FILE WRITING ERROR: unable to write to a file %s", filename);
+                    return 1;
+                }
+
                 break;
             }
 
             case WRITE_S8: {
-                printf("Input %d signed 8 bit numbers\n", amount);
-                int8_t num;
-                for (int i = 0; i < amount; ++i) {
-                    scanf("%hhd", &num);
-                    
-                    int result = write(file_desc, &num, sizeof(num));
+                int byte_cnt = 1;
+                int res = SUCCESSFUL_READ;
 
-                    if (result == WRITE_ERROR) {
-                        fprintf(stderr, "FILE WRITING ERROR: unable to write to a file %s", filename);
-                        return 1;
-                    }
+                if (autofill == NO_AUTOFILL) {
+                    printf("Input %d signed 8 bit numbers\n", amount);
+                    res = read_numbers(file_desc, amount, "%hhd", byte_cnt, output_endian);
+                    getline(&line, &alloc_space, stdin);
                 }
+
+                if (autofill == ENUMFILL) {
+                    res = enum_fill(file_desc, amount, byte_cnt, output_endian);
+                }
+
+                if (autofill == RANDOMFILL) {
+                    res = rand_fill(file_desc, amount, byte_cnt, output_endian);
+                }
+
+                if (res == WRITE_ERROR) {
+                    fprintf(stderr, "FILE WRITING ERROR: unable to write to a file %s", filename);
+                    return 1;
+                }
+
                 getline(&line, &alloc_space, stdin);
                 break;
             }
 
             case WRITE_U16: {
-                printf("Input %d unsigned 16 bit numbers\n", amount);
-                uint16_t num;
-                char buf[sizeof(num)] = { 0 };
-                for (int i = 0; i < amount; ++i) {
-                    scanf("%hu", &num);
+                int byte_cnt = 2;
+                int res = SUCCESSFUL_READ;
 
-                    if (output_endian == LITTLE_ENDIAN) {
-                        buf[0] = num & BYTEMASK_1;
-                        buf[1] = (num & BYTEMASK_2) >> CHAR_BIT;
-                    } else {
-                        buf[1] = num & BYTEMASK_1;
-                        buf[0] = (num & BYTEMASK_2) >> CHAR_BIT;
-                    }
-
-                    int result = write(file_desc, buf, sizeof(buf));
-
-                    if (result == WRITE_ERROR) {
-                        fprintf(stderr, "FILE WRITING ERROR: unable to write to a file %s", filename);
-                        return 1;
-                    }
+                if (autofill == NO_AUTOFILL) {
+                    printf("Input %d unsigned 16 bit numbers\n", amount);
+                    res = read_numbers(file_desc, amount, "%hu", byte_cnt, output_endian);
+                    getline(&line, &alloc_space, stdin);
                 }
+
+                if (autofill == ENUMFILL) {
+                    res = enum_fill(file_desc, amount, byte_cnt, output_endian);
+                }
+
+                if (autofill == RANDOMFILL) {
+                    res = rand_fill(file_desc, amount, byte_cnt, output_endian);
+                }
+
+                if (res == WRITE_ERROR) {
+                    fprintf(stderr, "FILE WRITING ERROR: unable to write to a file %s", filename);
+                    return 1;
+                }
+
                 getline(&line, &alloc_space, stdin);
                 break;
             }
 
             case WRITE_S16: {
-                printf("Input %d signed 16 bit numbers\n", amount);
-                int16_t num;
-                char buf[sizeof(num)] = { 0 };
-                for (int i = 0; i < amount; ++i) {
-                    scanf("%hd", &num);
+                int byte_cnt = 2;
+                int res = SUCCESSFUL_READ;
 
-                    if (output_endian == LITTLE_ENDIAN) {
-                        buf[0] = num & BYTEMASK_1;
-                        buf[1] = (num & BYTEMASK_2) >> CHAR_BIT;
-                    } else {
-                        buf[1] = num & BYTEMASK_1;
-                        buf[0] = (num & BYTEMASK_2) >> CHAR_BIT;
-                    }
-
-                    int result = write(file_desc, buf, sizeof(buf));
-
-                    if (result == WRITE_ERROR) {
-                        fprintf(stderr, "FILE WRITING ERROR: unable to write to a file %s", filename);
-                        return 1;
-                    }
+                if (autofill == NO_AUTOFILL) {
+                    printf("Input %d signed 16 bit numbers\n", amount);
+                    res = read_numbers(file_desc, amount, "%hd", byte_cnt, output_endian);
+                    getline(&line, &alloc_space, stdin);
                 }
+
+                if (autofill == ENUMFILL) {
+                    res = enum_fill(file_desc, amount, byte_cnt, output_endian);
+                }
+
+                if (autofill == RANDOMFILL) {
+                    res = rand_fill(file_desc, amount, byte_cnt, output_endian);
+                }
+
+                if (res == WRITE_ERROR) {
+                    fprintf(stderr, "FILE WRITING ERROR: unable to write to a file %s", filename);
+                    return 1;
+                }
+
                 getline(&line, &alloc_space, stdin);
                 break;
             }
 
             case WRITE_U32: {
-                printf("Input %d unsigned 32 bit numbers\n", amount);
-                uint32_t num;
-                char buf[sizeof(num)] = { 0 };
-                for (int i = 0; i < amount; ++i) {
-                    scanf("%u", &num);
+                int byte_cnt = 4;
+                int res = SUCCESSFUL_READ;
 
-                    if (output_endian == LITTLE_ENDIAN) {
-                        buf[0] = num & BYTEMASK_1;
-                        buf[1] = (num & BYTEMASK_2) >> CHAR_BIT;
-                        buf[2] = (num & BYTEMASK_3) >> (CHAR_BIT * 2);
-                        buf[3] = (num & BYTEMASK_4) >> (CHAR_BIT * 3);
-                    } else {
-                        buf[3] = num & BYTEMASK_1;
-                        buf[2] = (num & BYTEMASK_2) >> CHAR_BIT;
-                        buf[1] = (num & BYTEMASK_3) >> (CHAR_BIT * 2);
-                        buf[0] = (num & BYTEMASK_4) >> (CHAR_BIT * 3);
-                    }
-
-                    int result = write(file_desc, buf, sizeof(buf));
-
-                    if (result == WRITE_ERROR) {
-                        fprintf(stderr, "FILE WRITING ERROR: unable to write to a file %s", filename);
-                        return 1;
-                    }
+                if (autofill == NO_AUTOFILL) {
+                    printf("Input %d unsigned 32 bit numbers\n", amount);
+                    res = read_numbers(file_desc, amount, "%u", byte_cnt, output_endian);
+                    getline(&line, &alloc_space, stdin);
                 }
+
+                if (autofill == ENUMFILL) {
+                    res = enum_fill(file_desc, amount, byte_cnt, output_endian);
+                }
+
+                if (autofill == RANDOMFILL) {
+                    res = rand_fill(file_desc, amount, byte_cnt, output_endian);
+                }
+
+                if (res == WRITE_ERROR) {
+                    fprintf(stderr, "FILE WRITING ERROR: unable to write to a file %s", filename);
+                    return 1;
+                }
+
                 getline(&line, &alloc_space, stdin);
                 break;
             }
 
             case WRITE_S32: {
-                printf("Input %d signed 32 bit numbers\n", amount);
-                int32_t num;
-                char buf[sizeof(num)] = { 0 };
-                for (int i = 0; i < amount; ++i) {
-                    scanf("%d", &num);
+                int byte_cnt = 4;
+                int res = SUCCESSFUL_READ;
 
-                    if (output_endian == LITTLE_ENDIAN) {
-                        buf[0] = num & BYTEMASK_1;
-                        buf[1] = (num & BYTEMASK_2) >> CHAR_BIT;
-                        buf[2] = (num & BYTEMASK_3) >> (CHAR_BIT * 2);
-                        buf[3] = (num & BYTEMASK_4) >> (CHAR_BIT * 3);
-                    } else {
-                        buf[3] = num & BYTEMASK_1;
-                        buf[2] = (num & BYTEMASK_2) >> CHAR_BIT;
-                        buf[1] = (num & BYTEMASK_3) >> (CHAR_BIT * 2);
-                        buf[0] = (num & BYTEMASK_4) >> (CHAR_BIT * 3);
-                    }
-
-                    int result = write(file_desc, buf, sizeof(buf));
-
-                    if (result == WRITE_ERROR) {
-                        fprintf(stderr, "FILE WRITING ERROR: unable to write to a file %s", filename);
-                        return 1;
-                    }
+                if (autofill == NO_AUTOFILL) {
+                    printf("Input %d signed 32 bit numbers\n", amount);
+                    res = read_numbers(file_desc, amount, "%d", byte_cnt, output_endian);
+                    getline(&line, &alloc_space, stdin);
                 }
+
+                if (autofill == ENUMFILL) {
+                    res = enum_fill(file_desc, amount, byte_cnt, output_endian);
+                }
+
+                if (autofill == RANDOMFILL) {
+                    res = rand_fill(file_desc, amount, byte_cnt, output_endian);
+                }
+
+                if (res == WRITE_ERROR) {
+                    fprintf(stderr, "FILE WRITING ERROR: unable to write to a file %s", filename);
+                    return 1;
+                }
+
                 getline(&line, &alloc_space, stdin);
                 break;
             }
 
             case WRITE_U64: {
-                printf("Input %d unsigned 64 bit numbers\n", amount);
-                uint64_t num;
-                char buf[sizeof(num)] = { 0 };
-                for (int i = 0; i < amount; ++i) {
-                    scanf("%lu", &num);
+                int byte_cnt = 8;
+                int res = SUCCESSFUL_READ;
 
-                    if (output_endian == LITTLE_ENDIAN) {
-                        buf[0] = num & BYTEMASK_1;
-                        buf[1] = (num & BYTEMASK_2) >> CHAR_BIT;
-                        buf[2] = (num & BYTEMASK_3) >> (CHAR_BIT * 2);
-                        buf[3] = (num & BYTEMASK_4) >> (CHAR_BIT * 3);
-                        buf[4] = (num & BYTEMASK_5) >> (CHAR_BIT * 4);
-                        buf[5] = (num & BYTEMASK_6) >> (CHAR_BIT * 5);
-                        buf[6] = (num & BYTEMASK_7) >> (CHAR_BIT * 6);
-                        buf[7] = (num & BYTEMASK_8) >> (CHAR_BIT * 7);
-                    } else {
-                        buf[7] = num & BYTEMASK_1;
-                        buf[6] = (num & BYTEMASK_2) >> CHAR_BIT;
-                        buf[5] = (num & BYTEMASK_3) >> (CHAR_BIT * 2);
-                        buf[4] = (num & BYTEMASK_4) >> (CHAR_BIT * 3);
-                        buf[3] = (num & BYTEMASK_5) >> (CHAR_BIT * 4);
-                        buf[2] = (num & BYTEMASK_6) >> (CHAR_BIT * 5);
-                        buf[1] = (num & BYTEMASK_7) >> (CHAR_BIT * 6);
-                        buf[0] = (num & BYTEMASK_8) >> (CHAR_BIT * 7);
-                    }
-
-                    int result = write(file_desc, buf, sizeof(buf));
-
-                    if (result == WRITE_ERROR) {
-                        fprintf(stderr, "FILE WRITING ERROR: unable to write to a file %s", filename);
-                        return 1;
-                    }
+                if (autofill == NO_AUTOFILL) {
+                    printf("Input %d unsigned 64 bit numbers\n", amount);
+                    res = read_numbers(file_desc, amount, "%lu", byte_cnt, output_endian);
+                    getline(&line, &alloc_space, stdin);
                 }
+
+                if (autofill == ENUMFILL) {
+                    res = enum_fill(file_desc, amount, byte_cnt, output_endian);
+                }
+
+                if (autofill == RANDOMFILL) {
+                    res = rand_fill(file_desc, amount, byte_cnt, output_endian);
+                }
+
+                if (res == WRITE_ERROR) {
+                    fprintf(stderr, "FILE WRITING ERROR: unable to write to a file %s", filename);
+                    return 1;
+                }
+
                 getline(&line, &alloc_space, stdin);
                 break;
             }
 
             case WRITE_S64: {
-                printf("Input %d signed 64 bit numbers\n", amount);
-                int64_t num;
-                char buf[sizeof(num)] = { 0 };
-                for (int i = 0; i < amount; ++i) {
-                    scanf("%ld", &num);
+                int byte_cnt = 8;
+                int res = SUCCESSFUL_READ;
 
-                    if (output_endian == LITTLE_ENDIAN) {
-                        buf[0] = num & BYTEMASK_1;
-                        buf[1] = (num & BYTEMASK_2) >> CHAR_BIT;
-                        buf[2] = (num & BYTEMASK_3) >> (CHAR_BIT * 2);
-                        buf[3] = (num & BYTEMASK_4) >> (CHAR_BIT * 3);
-                        buf[4] = (num & BYTEMASK_5) >> (CHAR_BIT * 4);
-                        buf[5] = (num & BYTEMASK_6) >> (CHAR_BIT * 5);
-                        buf[6] = (num & BYTEMASK_7) >> (CHAR_BIT * 6);
-                        buf[7] = (num & BYTEMASK_8) >> (CHAR_BIT * 7);
-                    } else {
-                        buf[7] = num & BYTEMASK_1;
-                        buf[6] = (num & BYTEMASK_2) >> CHAR_BIT;
-                        buf[5] = (num & BYTEMASK_3) >> (CHAR_BIT * 2);
-                        buf[4] = (num & BYTEMASK_4) >> (CHAR_BIT * 3);
-                        buf[3] = (num & BYTEMASK_5) >> (CHAR_BIT * 4);
-                        buf[2] = (num & BYTEMASK_6) >> (CHAR_BIT * 5);
-                        buf[1] = (num & BYTEMASK_7) >> (CHAR_BIT * 6);
-                        buf[0] = (num & BYTEMASK_8) >> (CHAR_BIT * 7);
-                    }
-
-                    int result = write(file_desc, buf, sizeof(buf));
-
-                    if (result == WRITE_ERROR) {
-                        fprintf(stderr, "FILE WRITING ERROR: unable to write to a file %s", filename);
-                        return 1;
-                    }
+                if (autofill == NO_AUTOFILL) {
+                    printf("Input %d signed 64 bit numbers\n", amount);
+                    res = read_numbers(file_desc, amount, "%ld", byte_cnt, output_endian);
+                    getline(&line, &alloc_space, stdin);
                 }
+
+                if (autofill == ENUMFILL) {
+                    res = enum_fill(file_desc, amount, byte_cnt, output_endian);
+                }
+
+                if (autofill == RANDOMFILL) {
+                    res = rand_fill(file_desc, amount, byte_cnt, output_endian);
+                }
+
+                if (res == WRITE_ERROR) {
+                    fprintf(stderr, "FILE WRITING ERROR: unable to write to a file %s", filename);
+                    return 1;
+                }
+
                 getline(&line, &alloc_space, stdin);
                 break;
             }
 
-            case WRITE_CH: {
+            case WRITE_CH: { // add support for enum and autofill
                 printf("Input %d char characters\n", amount);
+                if (autofill != NO_AUTOFILL) {
+                    printf("Autofill isn't supported yet. Autofill changed to no autofill\n");
+                    autofill = NO_AUTOFILL;
+                }
                 for (int i = 0; i < amount; ++i) {
                     char c = getchar();
 
